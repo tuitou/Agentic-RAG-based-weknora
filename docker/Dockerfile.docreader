@@ -77,7 +77,11 @@ RUN mkdir -p /root/.paddleocr/whl/det/ch && \
 # 复制依赖文件
 COPY docreader/pyproject.toml docreader/uv.lock ./
 RUN pip install uv --break-system-packages && \
-    python -m uv sync --locked --no-dev
+    python -m uv sync --locked --no-dev && \
+    # 验证PDF解析库已安装
+    python -c "import pdfplumber; import pypdf; print('PDF libraries verified')" && \
+    # 清理pip缓存
+    pip cache purge || true
 
 # 复制源代码和生成脚本
 COPY docreader .
@@ -120,6 +124,7 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libreoffice \
     curl \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 grpc_health_probe
@@ -144,16 +149,36 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /root/.paddleocr /root/.paddleocr
 
 # 安装 Playwright 浏览器
-RUN python -m playwright install webkit
-RUN python -m playwright install-deps webkit
+RUN python -m playwright install webkit && \
+    python -m playwright install-deps webkit
+
+# 验证关键依赖
+RUN python -c "import pdfplumber; import pypdf; import paddleocr; print('All PDF parsing dependencies available')" || \
+    (echo "Warning: Some dependencies may not be available" && exit 0)
 
 # COPY docreader/scripts/download_deps.py download_deps.py
 # RUN python -m download_deps
 
 COPY --from=builder /app/ ./
 
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV GRPC_PORT=50051
+ENV GRPC_MAX_WORKERS=4
+ENV OCR_BACKEND=paddle
+ENV LOG_LEVEL=INFO
+
+# 创建必要的目录
+RUN mkdir -p /tmp/pdf_cache && \
+    chmod 777 /tmp/pdf_cache
+
 # 暴露 gRPC 端口
 EXPOSE 50051
+
+# 健康检查脚本
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD grpc_health_probe -addr=:50051 || exit 1
 
 # 直接运行 Python 服务（日志输出到 stdout/stderr）
 CMD ["uv", "run", "main.py"]

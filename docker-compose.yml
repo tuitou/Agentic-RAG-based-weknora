@@ -150,6 +150,14 @@ services:
       - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME:-}
       - MINIO_USE_SSL=${MINIO_USE_SSL:-}
       - WEB_PROXY=${WEB_PROXY:-}
+      # PDF解析相关配置
+      - OCR_BACKEND=${OCR_BACKEND:-paddle}
+      - OCR_API_BASE_URL=${OCR_API_BASE_URL:-}
+      - GRPC_PORT=${GRPC_PORT:-50051}
+      - GRPC_MAX_WORKERS=${GRPC_MAX_WORKERS:-4}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - EXTERNAL_HTTP_PROXY=${EXTERNAL_HTTP_PROXY:-}
+      - EXTERNAL_HTTPS_PROXY=${EXTERNAL_HTTPS_PROXY:-}
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=:50051"]
       interval: 30s

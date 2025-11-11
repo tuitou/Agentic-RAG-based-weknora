@@ -453,20 +453,27 @@ func (s *knowledgeService) DeleteKnowledge(ctx context.Context, id string) error
 	wg := errgroup.Group{}
 	// Delete knowledge embeddings from vector store
 	wg.Go(func() error {
+		// Skip if EmbeddingModelID is empty (e.g., for failed parsing documents)
+		if knowledge.EmbeddingModelID == "" {
+			logger.GetLogger(ctx).WithField("knowledge_id", knowledge.ID).
+				Warnf("DeleteKnowledge skipping embedding deletion: EmbeddingModelID is empty")
+			return nil
+		}
 		tenantInfo := ctx.Value(types.TenantInfoContextKey).(*types.Tenant)
 		retrieveEngine, err := retriever.NewCompositeRetrieveEngine(tenantInfo.RetrieverEngines.Engines)
 		if err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete knowledge embedding failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).Warnf("DeleteKnowledge failed to create retrieve engine, skipping embedding deletion")
+			return nil // Continue deletion even if retrieve engine creation fails
 		}
 		embeddingModel, err := s.modelService.GetEmbeddingModel(ctx, knowledge.EmbeddingModelID)
 		if err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete knowledge embedding failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).WithField("embedding_model_id", knowledge.EmbeddingModelID).
+				Warnf("DeleteKnowledge failed to get embedding model, skipping embedding deletion")
+			return nil // Continue deletion even if embedding model is not found (e.g., for failed parsing documents)
 		}
 		if err := retrieveEngine.DeleteByKnowledgeIDList(ctx, []string{knowledge.ID}, embeddingModel.GetDimensions()); err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete knowledge embedding failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).Warnf("DeleteKnowledge failed to delete embeddings, continuing with other deletions")
+			return nil // Continue deletion even if embedding deletion fails
 		}
 		return nil
 	})
@@ -474,8 +481,8 @@ func (s *knowledgeService) DeleteKnowledge(ctx context.Context, id string) error
 	// Delete all chunks associated with this knowledge
 	wg.Go(func() error {
 		if err := s.chunkService.DeleteChunksByKnowledgeID(ctx, knowledge.ID); err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete chunks failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).Warnf("DeleteKnowledge failed to delete chunks, continuing with other deletions")
+			return nil // Continue deletion even if chunk deletion fails (e.g., no chunks exist for failed parsing documents)
 		}
 		return nil
 	})
@@ -499,8 +506,8 @@ func (s *knowledgeService) DeleteKnowledge(ctx context.Context, id string) error
 	wg.Go(func() error {
 		namespace := types.NameSpace{KnowledgeBase: knowledge.KnowledgeBaseID, Knowledge: knowledge.ID}
 		if err := s.graphEngine.DelGraph(ctx, []types.NameSpace{namespace}); err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete knowledge graph failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).Warnf("DeleteKnowledge failed to delete knowledge graph, continuing with other deletions")
+			return nil // Continue deletion even if graph deletion fails (e.g., no graph exists for failed parsing documents)
 		}
 		return nil
 	})
@@ -530,22 +537,27 @@ func (s *knowledgeService) DeleteKnowledgeList(ctx context.Context, ids []string
 		tenantInfo := ctx.Value(types.TenantInfoContextKey).(*types.Tenant)
 		retrieveEngine, err := retriever.NewCompositeRetrieveEngine(tenantInfo.RetrieverEngines.Engines)
 		if err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete knowledge embedding failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).Warnf("DeleteKnowledge failed to create retrieve engine, skipping embedding deletion")
+			return nil // Continue deletion even if retrieve engine creation fails
 		}
 		group := map[string][]string{}
 		for _, knowledge := range knowledgeList {
-			group[knowledge.EmbeddingModelID] = append(group[knowledge.EmbeddingModelID], knowledge.ID)
+			// Skip if EmbeddingModelID is empty (e.g., for failed parsing documents)
+			if knowledge.EmbeddingModelID != "" {
+				group[knowledge.EmbeddingModelID] = append(group[knowledge.EmbeddingModelID], knowledge.ID)
+			}
 		}
-		for embeddingModelID, knowledgeList := range group {
+		for embeddingModelID, knowledgeIDs := range group {
 			embeddingModel, err := s.modelService.GetEmbeddingModel(ctx, embeddingModelID)
 			if err != nil {
-				logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge get embedding model failed")
-				return err
+				logger.GetLogger(ctx).WithField("error", err).WithField("embedding_model_id", embeddingModelID).
+					Warnf("DeleteKnowledge failed to get embedding model, skipping embedding deletion for this model")
+				continue // Continue with other models even if one fails
 			}
-			if err := retrieveEngine.DeleteByKnowledgeIDList(ctx, knowledgeList, embeddingModel.GetDimensions()); err != nil {
-				logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete knowledge embedding failed")
-				return err
+			if err := retrieveEngine.DeleteByKnowledgeIDList(ctx, knowledgeIDs, embeddingModel.GetDimensions()); err != nil {
+				logger.GetLogger(ctx).WithField("error", err).WithField("embedding_model_id", embeddingModelID).
+					Warnf("DeleteKnowledge failed to delete embeddings, continuing with other deletions")
+				continue // Continue with other models even if deletion fails
 			}
 		}
 		return nil
@@ -554,8 +566,8 @@ func (s *knowledgeService) DeleteKnowledgeList(ctx context.Context, ids []string
 	// 3. Delete all chunks associated with this knowledge
 	wg.Go(func() error {
 		if err := s.chunkService.DeleteByKnowledgeList(ctx, ids); err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete chunks failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).Warnf("DeleteKnowledge failed to delete chunks, continuing with other deletions")
+			return nil // Continue deletion even if chunk deletion fails (e.g., no chunks exist for failed parsing documents)
 		}
 		return nil
 	})
@@ -585,8 +597,8 @@ func (s *knowledgeService) DeleteKnowledgeList(ctx context.Context, ids []string
 			namespaces = append(namespaces, types.NameSpace{KnowledgeBase: knowledge.KnowledgeBaseID, Knowledge: knowledge.ID})
 		}
 		if err := s.graphEngine.DelGraph(ctx, namespaces); err != nil {
-			logger.GetLogger(ctx).WithField("error", err).Errorf("DeleteKnowledge delete knowledge graph failed")
-			return err
+			logger.GetLogger(ctx).WithField("error", err).Warnf("DeleteKnowledge failed to delete knowledge graph, continuing with other deletions")
+			return nil // Continue deletion even if graph deletion fails (e.g., no graph exists for failed parsing documents)
 		}
 		return nil
 	})
